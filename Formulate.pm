@@ -1,7 +1,7 @@
 package HTML::Formulate;
 
 use 5.000;
-use HTML::Tabulate 0.21;
+use HTML::Tabulate 0.30;
 use Carp;
 use strict;
 
@@ -12,7 +12,7 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 @EXPORT_OK = qw(&render);
 %EXPORT_TAGS = ();
 
-$VERSION = '0.09';
+$VERSION = '0.12';
 
 # Additional valid arguments, fields, and field attributes to those of
 #   HTML::Tabulate
@@ -30,9 +30,9 @@ my %VALID_ARG = (
     hidden => 'ARRAY/HASH',
     # required: list of required/mandatory fields, or tokens 'ALL' or 'NONE'
     required => 'ARRAY/SCALAR',
-    # errors: hashref of field => (scalar/array of) validation-error-messages
     # use_name_as_id: add 'name' as 'id' field to input-type fields if none set
     use_name_as_id => 'SCALAR',
+    # errors: hashref of field => (scalar/array of) validation-error-messages
     errors => 'HASH',
     # errors_where: where to display validation error messages:
     #   top: above form table (default)
@@ -308,8 +308,10 @@ sub cell_content
     $fattr ||= $self->{defn_t}->{field}->{$field} || {};
     $fattr->{type} ||= 'text' if $row;
 
-    # No special handling required for labels or 'table' forms
-    if (! defined $row or $self->{defn_t}->{formtype} eq 'table') {
+    # No special handling required for labels or 'table' forms or composites
+    if (! defined $row or 
+           $self->{defn_t}->{formtype} eq 'table' or 
+           $fattr->{composite}) {
         my ($fvalue, $value) = $self->SUPER::cell_content(@_);
         # Cache label values for later e.g. error_messages
         $self->{defn_t}->{_labels}->{$field} = $value if ! defined $row;
@@ -399,6 +401,70 @@ sub cell_content
                 $out .= $self->end_tag('option');
             }
             $out .= $self->end_tag('select');
+        }
+    }
+    # Radio fields
+    elsif ($fattr->{type} eq 'radio') {
+        my $values = $fattr->{values};
+        # Allow code on values
+        if (ref $values eq 'CODE') {
+            my @values = $values->($field, $row);
+            $values = @values == 1 && ref $values[0] ? $values[0] : \@values;
+        }
+        if (ref $values eq 'ARRAY' && @$values) {
+#           $out .= $self->start_tag('select', 
+#               { %{$fattr->{input_attr}}, name => $field });
+            my $vlabels = $fattr->{vlabels} || {};
+            # Iterate over values
+            my @out = ();
+            for (my $i = 0; $i <= $#$values; $i++) {
+                my $v = $values->[$i];
+                my $oattr = {};
+                $oattr->{value} = $v if defined $v;
+                if (defined $value) {
+                    # Multi-values make sense in select contexts
+                    if (ref $value eq 'ARRAY') {
+                        $oattr->{selected} = 'selected' 
+                            if grep { $v eq $_ } @$value;
+                    } else {
+                        $oattr->{selected} = 'selected' if $v eq $value;
+                    }
+                }
+                my $input = $self->start_tag('input', {
+                    %{$fattr->{input_attr}}, name => $field, type => 'radio', 
+                    ($self->{defn_t}->{use_name_as_id} ? (id => "${field}_$i") : ()),
+                    (defined $v ? (value => $v) : ()),
+                    (defined $value && ! ref $value && defined $v && $v eq $value
+                        ? (checked => 'checked') 
+                        : ()),
+                }, 'close');
+                my $vlabel = '';
+                if (ref $vlabels eq 'CODE') {
+                    # Two styles are supported for vlabel subroutines - the sub
+                    # can either just return a single label based on the given
+                    # value, or the first invocation can return an arrayref or
+                    # hashref containing the whole set of labels
+                    my @vlabels = $vlabels->($v, $field, $row);
+                    $vlabel = @vlabels == 1 ? $vlabels[0] : \@vlabels;
+                    # Replace vlabels if arrayref or hashref returned
+                    if (ref $vlabel) {
+                        $vlabels = $vlabel;
+                        $vlabel = '';
+                    }
+                }
+                if (ref $vlabels eq 'HASH') {
+                    $vlabel = $vlabels->{$v};
+                }
+                elsif (ref $vlabels eq 'ARRAY') {
+                    $vlabel = $vlabels->[$i];
+                }
+                $vlabel = $v if ! defined $vlabel or $vlabel eq '';
+
+                # TODO: need a way of controlling the format used here
+                push @out, "$vlabel&nbsp;$input";
+            }
+            # TODO: need a way of designating the join here too
+            $out .= join('  ', @out);
         }
     }
     # Hidden fields
@@ -569,12 +635,15 @@ sub row_across
     }
 
     my ($tr_attr, $error_td_attr);
-    ($tr_attr, $td_attr, $th_attr, $error_td_attr) = $self->extract_field_table_attr($td_attr, $th_attr); 
+    ($tr_attr, $td_attr, $th_attr, $error_td_attr) = 
+        $self->extract_field_table_attr($td_attr, $th_attr); 
 
-    # Standard row, but using above cell_merge_defaults data
-    my $row = $self->start_tag('tr', $tr_attr);
-    $row .= $self->cell(undef, $field, $lattr, $th_attr);
-    $row .= $self->cell($data->[0], $field, $fattr, $td_attr);
+    my @format = ();
+    my @value = ();
+    push @format, $self->cell(undef, $field, $lattr, $th_attr);
+    push @value,  $self->cell(undef, $field, $lattr, $th_attr, tags => 0);
+    push @format, $self->cell($data->[0], $field, $fattr, $td_attr);
+    push @value,  $self->cell($data->[0], $field, $fattr, $td_attr, tags => 0);
     # Column errors
     if ($self->{defn_t}->{errors_where} eq 'column') {
         my $error = ref $self->{defn_t}->{errors}->{$field} eq 'ARRAY' ?
@@ -583,9 +652,13 @@ sub row_across
                     @{$self->{defn_t}->{errors}->{$field}}) :
             sprintf($self->{defn_t}->{errors}->{$field} || '&nbsp;',
                 $self->{defn_t}->{_labels}->{$field});
-        $row .= $self->cell_tags($error, 1, $field, $error_td_attr);
+        push @format, $self->cell_tags($error, 1, $field, $error_td_attr);
     }
-    # End row
+
+    # Generate output
+    $tr_attr = { %$tr_attr, %{ $self->tr_attr($rownum, \@value, $data) } };
+    my $row = $self->start_tag('tr', $tr_attr);
+    $row .= join '', @format;
     $row .= $self->end_tag('tr', $tr_attr) . "\n";
 
     return $row;
@@ -660,6 +733,7 @@ sub submit
     my $cols = $defn->{errors_where} && 
                $defn->{errors_where} eq 'column' ? 3 : 2;
     if ($arg{table}) {
+        $tr_attr = { %$tr_attr, %{$self->tr_attr(1, [ 'Submit', $out ])} };
         return $self->start_tag('tr', $tr_attr) .
                $self->start_tag('td', { colspan => $cols, align => 'center', %$td_attr }) . "\n" .
                $out .
@@ -1189,15 +1263,34 @@ alternative to including it in a 'required' arrayref at the top-level.
 
 =item values
 
-An arrayref defining a list of possible values for a field, typically 
-used in defining the possible values of a list field e.g. a select, 
-checkbox set, etc.
+An arrayref or subroutine defining (or returning) a list of possible 
+values for a field, typically used in defining the possible values of a 
+list field e.g. a select, checkbox set, etc.
+
+If a subroutine, it is called as follows:
+
+  $values_sub->( $field, $row );
+
+where $field is the field name, and $row is the current data row. It 
+is expected to return a arrayref of values to use.
 
 =item vlabels
 
-An arrayref corresponding to the values arrayref above, defining a list 
-of labels to be associated with the corresponding value. Alternatively, 
-may be a hashref defining value => label correspondences explicitly.
+An arrayref or subroutine defining (or returning) a list of labels to
+be associated with the corresponding items in the values arrayref 
+above. Alternatively, it may be (or return) a hashref defining 
+value => label correspondences explicitly.
+
+If a subroutine, it is called as follows:
+
+  $vlabels_sub->( $v, $field, $row )
+
+where $v is the current value, $field is the field name, and $row is the 
+current data row. The subroutine may return any of the following: an
+arrayref defining the entire list of labels for this field, in the same
+order as the values arrayref; a hashref defining the entire set of labels
+for this field, mapping values to labels; or a scalar, defining the label
+for the given value only.
 
 =item OTHER ATTRIBUTES
 
