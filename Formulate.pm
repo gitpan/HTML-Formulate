@@ -12,7 +12,7 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 @EXPORT_OK = qw(&render);
 %EXPORT_TAGS = ();
 
-$VERSION = '0.12';
+$VERSION = '0.15';
 
 # Additional valid arguments, fields, and field attributes to those of
 #   HTML::Tabulate
@@ -23,8 +23,10 @@ my %VALID_ARG = (
     formtype => 'SCALAR',
     # primkey: primary key field, or list of primary key fields (for composites)
 #   primkey => 'SCALAR/ARRAY',
-    # submit: list of submit/button/reset elements at end of form
+    # submit: list of submit/button/reset elements for form
     submit => 'SCALAR/ARRAY',
+    # submit_location: location of submit elements - top/bottom/both, default: bottom
+    submit_location => 'SCALAR',
     # hidden: list of fields to render as hiddens, or hashref of field/value 
     #   pairs; default: none
     hidden => 'ARRAY/HASH',
@@ -56,7 +58,7 @@ my %VALID_FIELDS = (
 my %FIELD_ATTR = (
     # type: how this field is rendered on the form (roughly an <input /> type)
 #   type => [ qw(text textarea password select hidden display static omit)],
-    type => [ qw(text textarea password select checkbox radio hidden display static omit)],
+    type => [ qw(text textarea password file image button select checkbox radio hidden display static omit)],
     # datatype: the validation datatype for this field (deprecated?)
 #   datatype => 'SCALAR/ARRAY',
     # required: boolean
@@ -68,8 +70,8 @@ my %FIELD_ATTR = (
     vlabels => 'ARRAY/HASH/CODE',
 );
 # Attributes applicable to the various input-type fields
-my %TEXT_ATTR = map { $_ => 1 } qw(accesskey checked disabled id maxlength name notab onblur onchange onclick onfocus onselect readonly selected size tabindex taborder value vlabel);
-my %INPUT_ATTR = map { $_ => 1 } qw(accesskey checked disabled id name notab onblur onchange onclick onfocus onselect readonly selected tabindex taborder value vlabel);
+my %TEXT_ATTR = map { $_ => 1 } qw(accesskey disabled id maxlength name notab onblur onchange onclick onfocus onselect readonly selected size tabindex taborder value vlabel);
+my %INPUT_ATTR = map { $_ => 1 } qw(accesskey checked disabled id name notab onblur onchange onclick onfocus onselect readonly selected size tabindex taborder value vlabel);
 my %SELECT_ATTR = map { $_ => 1 } qw(disabled id multiple name onblur onchange onfocus size tabindex vlabel);
 my %TEXTAREA_ATTR = map { $_ => 1 } qw(accesskey cols disabled id name onblur onchange onfocus onselect readonly rows tabindex vlabel wrap);
 my %TABLE_ATTR = map { $_ => 1 } qw(tr th td);
@@ -114,7 +116,6 @@ sub init
         style => 'across',
         labels => 1,
         hidden => {},
-#       submit => [ 'submit' ],
         xhtml => 1,
         use_name_as_id => 0,
         null => '&nbsp;',
@@ -640,8 +641,10 @@ sub row_across
 
     my @format = ();
     my @value = ();
-    push @format, $self->cell(undef, $field, $lattr, $th_attr);
-    push @value,  $self->cell(undef, $field, $lattr, $th_attr, tags => 0);
+    if ($self->{defn_t}->{labels}) {
+      push @format, $self->cell(undef, $field, $lattr, $th_attr);
+      push @value,  $self->cell(undef, $field, $lattr, $th_attr, tags => 0);
+    }
     push @format, $self->cell($data->[0], $field, $fattr, $td_attr);
     push @value,  $self->cell($data->[0], $field, $fattr, $td_attr, tags => 0);
     # Column errors
@@ -707,17 +710,19 @@ sub submit
 
     # Build submit buttons input fields
     my ($tr_attr, $td_attr);
-    my $first = 1;
     for my $field (@{$defn->{submit}}) {
         my ($fattr, $td) = $self->cell_merge_defaults(1, $field);
         my $tr;
         ($tr, $td) = $self->extract_field_table_attr($td);
         # Save tr/td attributes from first submit
-        if ($first) {
-            $tr_attr = $tr;
-            $td_attr = $td;
-            $first = 0;
+        if (! $defn->{submit_attr}) {
+            $defn->{submit_attr} = {
+                tr_attr => $tr,
+                td_attr => $td,
+            };
         }
+        $tr_attr = $defn->{submit_attr}->{tr_attr};
+        $td_attr = $defn->{submit_attr}->{td_attr};
         my $field_id = lc $field;
         $field_id =~ s/\s+/_/g;
         my $field_value = $fattr->{value} || $fattr->{label} || 
@@ -730,12 +735,14 @@ sub submit
     }
 
     # Build submit line
-    my $cols = $defn->{errors_where} && 
-               $defn->{errors_where} eq 'column' ? 3 : 2;
     if ($arg{table}) {
+        my $cols = 2;
+        $cols++ if $defn->{errors_where} && $defn->{errors_where} eq 'column';
+        $cols-- if ! $self->{defn_t}->{labels};
+        my %colspan = $cols > 1 ? ( colspan => $cols ) : ();
         $tr_attr = { %$tr_attr, %{$self->tr_attr(1, [ 'Submit', $out ])} };
         return $self->start_tag('tr', $tr_attr) .
-               $self->start_tag('td', { colspan => $cols, align => 'center', %$td_attr }) . "\n" .
+               $self->start_tag('td', { %colspan, align => 'center', %$td_attr }) . "\n" .
                $out .
                $self->end_tag('td') . 
                $self->end_tag('tr') . "\n";
@@ -820,7 +827,19 @@ sub start_table
     my $out = '';
     $out .= $self->start_tag('form',$self->{defn_t}->{form}) . "\n"
         if $self->{defn_t}->{form};
-    $out .= $self->SUPER::start_table();
+    my $submit_location = $self->{defn_t}->{submit_location} || 'bottom';
+    if ($submit_location eq 'bottom') {
+      $out .= $self->SUPER::start_table();
+    }
+    elsif (exists $self->{defn_t}->{submit_table} && 
+                  $self->{defn_t}->{submit_table} == 0) {
+      $out .= $self->submit();
+      $out .= $self->SUPER::start_table();
+    } 
+    else {
+      $out .= $self->SUPER::start_table();
+      $out .= $self->submit(table => 1);
+    }
     return $out;
 }
 
@@ -831,8 +850,12 @@ sub end_table
 {
     my ($self) = @_;
     my $out = '';
-    if (exists $self->{defn_t}->{submit_table} && 
-             ! $self->{defn_t}->{submit_table}) {
+    my $submit_location = $self->{defn_t}->{submit_location} || 'bottom';
+    if ($submit_location eq 'top') {
+      $out .= $self->SUPER::end_table();
+    }
+    elsif (exists $self->{defn_t}->{submit_table} && 
+                  $self->{defn_t}->{submit_table} == 0) {
       $out .= $self->SUPER::end_table();
       $out .= $self->submit();
     }
@@ -1135,6 +1158,12 @@ defining a CSS 'error' class.
 
 =back
 
+=item submit_location
+
+Scalar, either 'bottom' or 'top' or 'both'. Location of submit 
+elements. Default: bottom.
+
+
 =head1 FIELD ATTRIBUTE ARGUMENTS
 
 Per-field attributes can be defined in a 'field_attr' hashref
@@ -1189,7 +1218,8 @@ attributes, and then per-field attributes.
 An enum defining what sort of control to present for this field, usually 
 being an HTML input type (or equivalent). Current valid values are:
 
-  text textarea password radio select checkbox hidden display static omit
+  text textarea password radio select checkbox hidden file image button
+  display static omit
 
 Of these display, static, and omit do not have obvious HTML correlates - 
 these mean:
