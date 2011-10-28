@@ -12,7 +12,7 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 @EXPORT_OK = qw(&render);
 %EXPORT_TAGS = ();
 
-$VERSION = '0.17';
+$VERSION = '0.18';
 
 # Additional valid arguments, fields, and field attributes to those of
 #   HTML::Tabulate
@@ -319,6 +319,7 @@ sub cell_content
 
     # Create <input> (etc.) fields
     my $out = '';
+    my $selected_value = $self->{defn_t}->{xhtml} ? 'selected' : '';
     delete $fattr->{value} 
         if defined $self->{defn_t}->{null} && defined $fattr->{value} &&
             $fattr->{value} eq $self->{defn_t}->{null};
@@ -361,10 +362,9 @@ sub cell_content
                 if (defined $value) {
                     # Multi-values make sense in select contexts
                     if (ref $value eq 'ARRAY') {
-                        $oattr->{selected} = 'selected' 
-                            if grep { $v eq $_ } @$value;
+                        $oattr->{selected} = $selected_value if grep { $v eq $_ } @$value;
                     } else {
-                        $oattr->{selected} = 'selected' if $v eq $value;
+                        $oattr->{selected} = $selected_value if $v eq $value;
                     }
                 }
                 $out .= $self->start_tag('option', $oattr);
@@ -417,10 +417,9 @@ sub cell_content
                 if (defined $value) {
                     # Multi-values make sense in select contexts
                     if (ref $value eq 'ARRAY') {
-                        $oattr->{selected} = 'selected' 
-                            if grep { $v eq $_ } @$value;
+                        $oattr->{selected} = $selected_value if grep { $v eq $_ } @$value;
                     } else {
-                        $oattr->{selected} = 'selected' if $v eq $value;
+                        $oattr->{selected} = $selected_value if $v eq $value;
                     }
                 }
                 my $input = $self->start_tag('input', {
@@ -636,12 +635,17 @@ sub row_across
 
     my @format = ();
     my @value = ();
+    my $th_colspan = 1;
     if ($self->{defn_t}->{labels}) {
       push @format, $self->cell(undef, $field, $lattr, $th_attr);
       push @value,  $self->cell(undef, $field, $lattr, $th_attr, tags => 0);
+      $th_colspan = $th_attr->{colspan} || 1;
     }
-    push @format, $self->cell($data->[0], $field, $fattr, $td_attr);
-    push @value,  $self->cell($data->[0], $field, $fattr, $td_attr, tags => 0);
+    # Omit data field if th_colspan >= 2
+    if ($th_colspan < 2) {
+      push @format, $self->cell($data->[0], $field, $fattr, $td_attr);
+      push @value,  $self->cell($data->[0], $field, $fattr, $td_attr, tags => 0);
+    }
     # Column errors
     if ($self->{defn_t}->{errors_where} eq 'column') {
         my $error = ref $self->{defn_t}->{errors}->{$field} eq 'ARRAY' ?
@@ -1195,6 +1199,14 @@ as defined in the top-level 'required' argument. The order in
 which attributes are defined is global -defaults, then -required
 attributes, and then per-field attributes, allowing defaults to 
 be overridden as required.
+
+For example, to turn off the default 'required' field styling,
+you could define -required as follows:
+
+  -required => {
+    th => {},
+    label_format => '',
+  }
 
 =item -errors
 
