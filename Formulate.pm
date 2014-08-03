@@ -12,7 +12,7 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 @EXPORT_OK = qw(&render);
 %EXPORT_TAGS = ();
 
-$VERSION = '0.18';
+$VERSION = '0.19';
 
 # Additional valid arguments, fields, and field attributes to those of
 #   HTML::Tabulate
@@ -164,7 +164,13 @@ sub cell_split_out_tx_attr
         $self->{defn_t}->{$attr}->{$field}->{input_attr} = {};
 
         for (keys %{ $self->{defn_t}->{$attr}->{$field}->{tx_attr} }) {
-            if ($TEXT_ATTR{$_} || $TEXTAREA_ATTR{$_} || $SELECT_ATTR{$_}) {
+            # Attributes like input_class will be mapped as input.class
+            if (m/^input_/) {
+                my $val = delete $self->{defn_t}->{$attr}->{$field}->{tx_attr}->{$_};
+                s/^input_//;
+                $self->{defn_t}->{$attr}->{$field}->{input_attr}->{$_} = $val;
+            }
+            elsif ($TEXT_ATTR{$_} || $TEXTAREA_ATTR{$_} || $SELECT_ATTR{$_}) {
                 my $val = delete $self->{defn_t}->{$attr}->{$field}->{tx_attr}->{$_};
 
                 if ($type eq 'select') {
@@ -388,7 +394,7 @@ sub cell_content
                 elsif (ref $vlabels eq 'ARRAY') {
                     $vlabel = $vlabels->[$i];
                 }
-                $vlabel = $v if ! defined $vlabel or $vlabel eq '';
+                $vlabel = $v if ! defined $vlabel;
 
                 $out .= $vlabel;
                 $out .= $self->end_tag('option');
